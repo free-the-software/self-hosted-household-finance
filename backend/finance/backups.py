@@ -480,8 +480,11 @@ def run_due_backups():
     return done
 
 
-def health():
-    """One overall status for the app to show: setup, off, ok, failed or overdue."""
+def health(details=True):
+    """One overall status for the app to show: setup, off, ok, failed or overdue.
+
+    details: include why the last backup failed. Its error can carry internal
+    text (a database message, a file path), so only admins get it."""
     config = BackupSettings.load()
     if not config.encryption_ready:
         return {'state': 'setup', 'message': 'Backups are not set up yet. Set up encryption to start.'}
@@ -507,7 +510,8 @@ def health():
         good = Backup.objects.filter(kind=kind, status=Backup.OK)
         covered = good.filter(scheduled_for__gte=slot).exists() or good.filter(started_at__gte=slot).exists()
         if last and last.status == Backup.FAILED:
-            problems.append(('failed', f"The last {info['label'].lower()} failed: {last.error}"))
+            why = f": {last.error}" if details else ". An admin can see why in Settings → Backups."
+            problems.append(('failed', f"The last {info['label'].lower()} failed{why}"))
         elif slot >= config.updated_at and not covered:
             problems.append(('overdue', f"The {info['label'].lower()} due {timezone.localtime(slot):%d %b %H:%M} has not run."))
 
