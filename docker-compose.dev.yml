@@ -1,0 +1,48 @@
+# ==========================================================
+# DEV OVERLAY — desktop only
+# ----------------------------------------------------------
+# Layered on top of docker-compose.yaml. Activated by the line
+#   COMPOSE_FILE=docker-compose.yaml:docker-compose.dev.yml
+# in your desktop .env (see .env.example). The server's .env
+# does NOT have that line, so prod never picks this file up.
+#
+#   App:          http://localhost:5173        (DEV_APP_PORT)
+#   Django admin: http://localhost:8000/admin  (DEV_BACKEND_PORT)
+#   Postgres:     localhost:5433               (DB_HOST_PORT)
+#
+# A second copy alongside (a fresh database to try things on): clone into
+# another folder and give its .env other ports and a CONTAINER_PREFIX; see
+# the README.
+# ==========================================================
+
+services:
+  backend:
+    command: python manage.py runserver 0.0.0.0:8000   # auto-reloads on code changes
+    volumes:
+      - ./backend:/app       # writable in dev (prod mounts it read-only), e.g. for makemigrations
+    ports:
+      - "${DEV_BACKEND_PORT:-8000}:8000"          # hit Django/admin directly
+
+  watcher:
+    volumes:
+      - ./backend:/app
+
+  scheduler:
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build:
+      target: dev            # Vite dev server instead of the nginx build
+    command: npm run dev -- --host
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME}
+      - DEV_APP_PORT=${DEV_APP_PORT:-5173}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    stdin_open: true
+    tty: true
+    ports: !override
+      - "${DEV_APP_PORT:-5173}:5173"          # Vite dev server with hot reload (instead of 8080)
+

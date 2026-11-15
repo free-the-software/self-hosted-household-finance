@@ -1,0 +1,8 @@
+# Exact versions: an open-ended version here once pulled in an incompatible
+# release and left the worker in a crash loop. Raise them deliberately, and
+# test with a receipt image when you do.
+flask==3.1.3
+gunicorn==26.2.0
+pillow==13.0.0
+transformers==5.22.2
+torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu

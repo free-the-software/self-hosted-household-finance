@@ -1,0 +1,53 @@
+# Dependabot: pull requests for library updates and security fixes.
+# Weekly, with small (minor and patch) updates grouped into one pull request
+# per area, so they don't arrive one by one.
+#
+# Major versions (and new Python or Node releases for the images) are not
+# proposed: they usually need code changes and are planned as their own
+# work. Fixes within the versions in use still come through.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule: { interval: weekly }
+    groups:
+      backend-minor:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: pip
+    directory: /ai_worker
+    schedule: { interval: weekly }
+    groups:
+      receipt-reader-minor:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: { interval: weekly }
+    groups:
+      frontend-minor:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: docker
+    directories: [/backend, /frontend, /ai_worker]
+    schedule: { interval: weekly }
+    ignore:
+      # A new Python (3.13 to 3.15) is a minor version number but a big
+      # change: libraries such as the receipt reader's need builds for it
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

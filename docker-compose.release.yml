@@ -1,0 +1,23 @@
+# ==========================================================
+# RELEASE OVERLAY: ready-made images instead of building
+# ----------------------------------------------------------
+# Layered on top of docker-compose.yaml by scripts/setup.sh when you install
+# a release; .env then has
+#   COMPOSE_FILE=docker-compose.yaml:docker-compose.release.yml
+#   APP_TAG=1.2.0
+# (behind Traefik, add :docker-compose.traefik.yml to that COMPOSE_FILE).
+# scripts/update.sh moves APP_TAG to the newest release and downloads its
+# images. Without this file, the app is built from the code, as before.
+# ==========================================================
+
+services:
+  backend:
+    image: ${APP_IMAGES:-ghcr.io/free-the-software/self-hosted-household-finance}/backend:${APP_TAG:?APP_TAG must be set in .env}
+  watcher:
+    image: ${APP_IMAGES:-ghcr.io/free-the-software/self-hosted-household-finance}/backend:${APP_TAG:?APP_TAG must be set in .env}
+  scheduler:
+    image: ${APP_IMAGES:-ghcr.io/free-the-software/self-hosted-household-finance}/backend:${APP_TAG:?APP_TAG must be set in .env}
+  frontend:
+    image: ${APP_IMAGES:-ghcr.io/free-the-software/self-hosted-household-finance}/frontend:${APP_TAG:?APP_TAG must be set in .env}
+  ai-worker:
+    image: ${APP_IMAGES:-ghcr.io/free-the-software/self-hosted-household-finance}/receipt-reader:${APP_TAG:?APP_TAG must be set in .env}

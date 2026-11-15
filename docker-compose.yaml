@@ -1,0 +1,193 @@
+# ==========================================================
+# Finance: the whole app, ready to run on its own.
+#
+#   docker compose up -d --build     ->  http://localhost:8080
+#
+# Optional add-ons, chosen with COMPOSE_FILE in .env:
+#   docker-compose.traefik.yml  serve it through a Traefik reverse proxy
+#                               (HTTPS, a domain name; no published port)
+#   docker-compose.dev.yml      development: hot reload, local ports
+# e.g. COMPOSE_FILE=docker-compose.yaml:docker-compose.traefik.yml
+# ==========================================================
+services:
+  # ==========================================
+  # 1. DATABASE (Postgres)
+  # ==========================================
+  finance_db:
+    image: postgres:18
+    container_name: ${CONTAINER_PREFIX:-finance}_db
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    # No env_file: the database needs only the three values above, not the
+    # app's secret key or the single sign-on credentials.
+    # Published on this machine's loopback only, never to the network.
+    # For pgAdmin from another machine, tunnel over SSH:
+    #   ssh -L 5434:localhost:5433 user@server   -> connect to localhost:5434
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - data:/var/lib/postgresql
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==========================================
+  # 2. BACKEND (Django API)
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        # The release's version (scripts/update.sh sets it from the git tag)
+        - APP_VERSION=${APP_VERSION:-}
+    container_name: ${CONTAINER_PREFIX:-finance}-backend
+    security_opt:
+      - no-new-privileges:true
+    # Production WSGI server. docker-compose.dev.yml swaps this for Django's
+    # auto-reloading dev server.
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120 --access-logfile - --error-logfile - --no-control-socket
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME}
+      # Where the app is installed on the host, for the update command shown in
+      # Settings: from .env, or else the folder docker compose was run from
+      - INSTALL_DIR=${INSTALL_DIR:-${PWD}}
+      # Whether the receipt reader add-on is installed ("receipts")
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-}
+    working_dir: /app
+    volumes:
+      - ./backend:/app:ro   # read-only: a compromised app cannot alter its own code
+      - ${DATA_DIR:-./data}:/data
+      # Where backups are written. Set BACKUP_DIR_HOST in .env to put them on
+      # another disk or a network share instead of next to the data.
+      - ${BACKUP_DIR_HOST:-${DATA_DIR:-./data}/backups}:/data/backups
+    expose:
+      - 8000
+    depends_on:
+      finance_db:
+        condition: service_healthy
+    networks:
+      - default
+    restart: unless-stopped
+   
+  # ==========================================
+  # 3. WATCHER (Auto-Import)
+  # ==========================================
+  watcher:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ${CONTAINER_PREFIX:-finance}_watcher
+    security_opt:
+      - no-new-privileges:true
+    command: python watcher.py
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      - PYTHONUNBUFFERED=1
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-}
+    volumes:
+      - ./backend:/app:ro   # read-only: a compromised app cannot alter its own code
+      - ${DATA_DIR:-./data}:/data
+    restart: on-failure
+    depends_on:
+      backend:
+        condition: service_started
+      finance_db:
+        condition: service_healthy
+
+  # ==========================================
+  # 4. FRONTEND (React)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # The release's version, shown in the menu; left empty when building from source
+        - APP_VERSION=${APP_VERSION:-}
+        - SOURCE_URL=${SOURCE_URL:-}
+    container_name: ${CONTAINER_PREFIX:-finance}_react
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # Prod serves the built bundle with nginx (the Dockerfile's default
+    # stage). The Vite dev server only runs via docker-compose.dev.yml.
+    # No env_file here: the browser bundle must never see backend secrets.
+    # The app's address. On its own (no reverse proxy) this is the way in:
+    # http://localhost:8080 by default, on this computer only. APP_BIND and
+    # APP_PORT in .env change that; docker-compose.traefik.yml removes it.
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - default
+
+# ==========================================
+# 5. SCHEDULER (APScheduler)
+# ==========================================
+  scheduler:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python manage.py start_scheduler
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./backend:/app:ro   # read-only: a compromised app cannot alter its own code
+      - ${DATA_DIR:-./data}:/data        # the nightly retention job deletes expired files here
+      - ${BACKUP_DIR_HOST:-${DATA_DIR:-./data}/backups}:/data/backups   # scheduled backups are written here
+    depends_on:
+      - finance_db
+      - backend
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      - DEBUG=1
+      - DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1 [::1] backend
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_HOST=finance_db
+    restart: on-failure
+  # ==========================================
+  # 6. RECEIPT READER (Florence-2)
+  # ==========================================
+  # Reads receipt photos. The model is part of the image (about 2 GB with its
+  # libraries); it's loaded into memory (about 2 GB) when a receipt arrives
+  # and released after RECEIPT_READER_IDLE_MINUTES without one.
+  # An optional add-on, in beta: only installed and run when .env has
+  # COMPOSE_PROFILES=receipts (scripts/setup.sh asks).
+  ai-worker:
+    profiles: [receipts]
+    build: 
+      context: ./ai_worker
+    container_name: ${CONTAINER_PREFIX:-finance}_ai_worker
+    security_opt:
+      - no-new-privileges:true
+    # No published port: it has no auth, and the backend reaches it at
+    # http://ai-worker:5000 over the internal Docker network.
+    environment:
+      - MODEL_IDLE_MINUTES=${RECEIPT_READER_IDLE_MINUTES:-10}
+    restart: unless-stopped
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
+
+volumes: 
+  data:  # This is the named volume for Postgres data persistence. It will be stored in Docker's internal storage, not on your host filesystem.

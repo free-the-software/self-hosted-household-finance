@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+media/
+
+# Environment variables (SECURITY RISK if committed)
+.env
+.env.*
+!.env.example
+
+# OS specific
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Docker (Optional: ignore local overrides)
+docker-compose.override.yml
+
+/data/
+/data/**/*
+# A second dev stack's data (scripts/dev-copy.sh)
+/data-*/
+
+node_modules/
+dist/
+build/
+venv/
+
+# Financial data, receipts, backups and keys never belong in the repository,
+# wherever they are saved. (An image the docs need: git add -f it on purpose.)
+*.sql
+*.dump
+*.qfx
+*.ofx
+*.qif
+*.csv
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.tiff
+*.webp
+*.pdf
+*.age
+*.pem
+*.key

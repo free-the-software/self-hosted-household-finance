@@ -1,0 +1,77 @@
+# Builds and publishes the app's images when a version is tagged:
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# After the tests pass, each image is published to GitHub's container
+# registry as ghcr.io/<owner>/<repo>/<image>, tagged 1.2.0, 1.2 and latest,
+# with the version built in (shown in Settings). Installs made from a release
+# (docker-compose.release.yml) download these instead of building.
+name: Release images
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  images:
+    name: Image ${{ matrix.image }}
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: backend          # also runs the watcher and the scheduler
+            context: backend
+            platforms: linux/amd64,linux/arm64
+          - image: frontend
+            context: frontend
+            platforms: linux/amd64,linux/arm64
+          # The optional receipt reader: 64-bit x86 only for now (its machine
+          # learning libraries are large, and ARM is untested)
+          - image: receipt-reader
+            context: ai_worker
+            platforms: linux/amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
