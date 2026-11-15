@@ -1205,7 +1205,8 @@ def _backup_state(request):
     config = BackupSettings.load()
     return {
         'can_edit': bool(request.user.is_staff),
-        'health': backups.health(),
+        # Why a backup failed can include internal details: admins only
+        'health': backups.health(details=request.user.is_staff),
         'folder': settings.BACKUP_DIR,
         'timezone': settings.TIME_ZONE,
         'server_time': timezone.localtime(),
@@ -1222,7 +1223,8 @@ def _backup_state(request):
             {
                 'id': b.id, 'kind': b.kind, 'status': b.status, 'trigger': b.trigger,
                 'started_at': b.started_at, 'finished_at': b.finished_at,
-                'filename': b.filename, 'size': b.size, 'encrypted': b.encrypted, 'error': b.error,
+                'filename': b.filename, 'size': b.size, 'encrypted': b.encrypted,
+                'error': b.error if request.user.is_staff else ('Failed. An admin can see why.' if b.error else ''),
             }
             for b in Backup.objects.all()[:100]
         ],
@@ -1397,7 +1399,7 @@ def backup_overview(request):
 @api_view(['GET'])
 def backup_health(request):
     """Small status the whole app can poll to warn about failed or overdue backups."""
-    return Response(backups.health())
+    return Response(backups.health(details=request.user.is_staff))
 
 
 @api_view(['GET', 'PUT'])
@@ -1660,6 +1662,22 @@ class ReceiptViewSet(viewsets.ModelViewSet):
         except Transaction.DoesNotExist:
             return Response({'error': 'Transaction not found'}, status=404)
 
+def browser_copy_to_suffix(name):
+    """A browser's copy number becomes "_copy-N": "X123 (1).csv" -> "X123_copy-1.csv".
+
+    Done with plain text handling, which takes the same short time whatever
+    the name holds."""
+    stem, dot, extension = name.rpartition('.')
+    if not dot:
+        return name
+    if stem.endswith(')'):
+        start = stem.rfind('(')
+        number = stem[start + 1:-1]
+        if start >= 0 and number.isascii() and number.isdigit():
+            stem = stem[:start].rstrip() + '_copy-' + number
+    return stem + dot + extension
+
+
 class FileUploadView(APIView):
     """
     Receives a bank file or receipt image and leaves it in the dropzone for
@@ -1698,8 +1716,9 @@ class FileUploadView(APIView):
             # browser's copy number ("X123(1).csv" for a second download)
             # becomes "_copy-1" first, or it would run into the account
             # number some banks put in the name ("X1231.csv").
-            name = re.sub(r'\s*\((\d+)\)(?=\.[^.]*$)', r'_copy-\1', file_obj.name)
-            filename = get_valid_filename(name)
+            name = file_obj.name
+            filename = get_valid_filename(browser_copy_to_suffix(name)) if len(name) <= 255 else ''
+
         except SuspiciousFileOperation:
             filename = ''
         if not filename or filename.startswith('.'):

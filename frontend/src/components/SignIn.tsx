@@ -12,8 +12,17 @@ import Logo from './Logo';
 
 const nextPage = () => {
     const next = new URLSearchParams(window.location.search).get('next') || '';
-    // Only pages of this app: "/x", never "//other.site"
-    if (next.startsWith('/') && !next.startsWith('//')) return next;
+    // Only pages of this app. The address is worked out the way the browser
+    // would, so tricks like "//other.site" or "/\other.site" (browsers read
+    // the backslash as a slash) can't send someone elsewhere.
+    if (next.startsWith('/')) {
+        try {
+            const url = new URL(next, window.location.origin);
+            if (url.origin === window.location.origin) return url.pathname + url.search + url.hash;
+        } catch {
+            // not an address at all
+        }
+    }
     return window.location.pathname === '/sign-in' ? '/' : window.location.pathname + window.location.search;
 };
 

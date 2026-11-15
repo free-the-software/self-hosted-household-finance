@@ -16,6 +16,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 from datetime import date, timedelta
 from decimal import Decimal
 from unittest import mock
@@ -372,6 +373,20 @@ class BackupTests(StorageTestCase):
         self.assertEqual(os.listdir(os.path.join(self.backup_dir, '.work')), [])
         self.assertEqual(backups.health()['state'], 'failed')
 
+    def test_why_a_backup_failed_is_shown_to_admins_only(self):
+        self.set_up_encryption()
+        with mock.patch('finance.backups.dump_database', side_effect=backups.BackupError('pg_dump failed: secret internal detail')):
+            backups.create_backup('db')
+        admin_view = self.client.get('/api/backups/').json()
+        self.assertIn('secret internal detail', admin_view['health']['message'])
+        self.assertIn('secret internal detail', admin_view['backups'][0]['error'])
+        self.as_member()
+        for answer in (self.client.get('/api/backups/').json(), self.client.get('/api/backups/health/').json()):
+            self.assertNotIn('secret internal detail', json.dumps(answer))
+        member_view = self.client.get('/api/backups/').json()
+        self.assertEqual(member_view['health']['state'], 'failed', 'members still learn that it failed')
+        self.assertIn('An admin can see why', member_view['health']['message'])
+
     def test_interrupted_backup_is_detected_and_does_not_block(self):
         self.set_up_encryption()
         import socket
@@ -592,6 +607,22 @@ class UploadTests(StorageTestCase):
         self.assertEqual(self.upload('.hidden.csv').status_code, 400)
         self.assertEqual(self.upload('my bank file (1).qfx').status_code, 201)
         self.assertIn('my_bank_file_copy-1.qfx', self.waiting())
+
+    def test_odd_file_names_are_handled_quickly_and_long_ones_refused(self):
+        from finance.views import browser_copy_to_suffix as copy
+        self.assertEqual(copy('X123 (1).csv'), 'X123_copy-1.csv')
+        self.assertEqual(copy('X123(12).CSV'), 'X123_copy-12.CSV')
+        self.assertEqual(copy('statement.qfx'), 'statement.qfx')
+        self.assertEqual(copy('notes (a).csv'), 'notes (a).csv', 'only a number in brackets')
+        self.assertEqual(copy('no extension (1)'), 'no extension (1)')
+        # A name built to make a pattern search crawl: handled at once
+        started = time.monotonic()
+        copy(' ' * 200_000 + '(1' + '.csv')
+        copy('(' * 200_000 + '.csv')
+        self.assertLess(time.monotonic() - started, 1)
+        # Django shortens a very long name to 255 characters before the app sees it
+        self.assertEqual(self.upload('a' * 5000 + ' (1).csv').status_code, 201)
+        self.assertTrue(all(len(name) <= 255 for name in self.waiting()))
 
     def test_missing_file_and_signed_out_requests(self):
         self.assertEqual(self.client.post('/api/upload/', {}).status_code, 400)
