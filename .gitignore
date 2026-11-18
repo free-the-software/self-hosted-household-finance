@@ -52,3 +52,6 @@ venv/
 *.age
 *.pem
 *.key
+
+*.p12
+*.crt
