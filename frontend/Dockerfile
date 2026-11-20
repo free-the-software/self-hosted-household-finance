@@ -1,5 +1,9 @@
 # --- dev: Vite dev server with hot reload (docker-compose.dev.yml targets this) ---
-FROM node:22-alpine AS dev
+# Runs on the machine doing the build ($BUILDPLATFORM): the JavaScript it
+# produces is the same for every processor, so a release builds it once at
+# full speed instead of again under emulation for ARM. Only the nginx stage
+# below is made per platform.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS dev
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
