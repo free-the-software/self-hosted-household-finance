@@ -48,6 +48,34 @@ class TransactionSplitSerializer(serializers.ModelSerializer):
         model = TransactionSplit
         fields = ['id', 'subcategory', 'subcategory_name', 'amount', 'memo']
 
+def check_account_name(name, instance=None):
+    """
+    Account names are unique, ignoring capitals and spaces at the ends, so
+    every list, report and import can tell accounts apart. A name that isn't
+    changing is let through, so an older pair of twins can still be edited.
+    """
+    name = (name or '').strip()
+    if not name:
+        raise serializers.ValidationError('Give the account a name.')
+    if instance is not None and (instance.name or '').strip().lower() == name.lower():
+        return name
+    other = Account.objects.filter(name__iexact=name).exclude(pk=getattr(instance, 'pk', None)).first()
+    if other:
+        closed = ' (closed)' if other.closed_date else ''
+        raise serializers.ValidationError(
+            f'You already have an account called "{other.name}"{closed}. Give this one a different name, '
+            'for example with the bank or the last digits of the account number.')
+    return name
+
+
+def unused_account_name(base):
+    """base, or base with a number after it if that name is taken: "House escrow 2"."""
+    name, number = base, 2
+    while Account.objects.filter(name__iexact=name).exists():
+        name, number = f'{base} {number}', number + 1
+    return name
+
+
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = Account
@@ -81,6 +109,9 @@ class AccountSerializer(serializers.ModelSerializer):
         ]
         # Ensure the primary key is read-only so the user can't manually change it
         read_only_fields = ['account_id', 'last_balance', 'balance_date', 'current_balance', 'import_sign_confirmed']
+
+    def validate_name(self, value):
+        return check_account_name(value, self.instance)
 
     def validate(self, data):
         # Set by hand in Settings: that's the answer, so imports stop asking
@@ -503,6 +534,9 @@ class HoldingSerializer(serializers.ModelSerializer):
         asset = getattr(account, 'asset_details', None)
         return {'HOME': 'home', 'VEHICLE': 'vehicle', 'INVESTMENT': 'investment'}.get(asset.kind, 'other') if asset else 'other'
 
+    def validate_name(self, value):
+        return check_account_name(value, self.instance)
+
     def validate(self, data):
         kind = data.get('kind') or (self._kind_of(self.instance) if self.instance else None)
         is_loan = self.KINDS[kind][2]
@@ -541,7 +575,7 @@ class HoldingSerializer(serializers.ModelSerializer):
         if loan.escrow_mode != LoanDetail.EscrowMode.ACCOUNT or loan.escrow_account_id:
             return
         loan.escrow_account = Account.objects.create(
-            name=f'{account.name} escrow', account_type='ESCROW',
+            name=unused_account_name(f'{account.name} escrow'), account_type='ESCROW',
             last_balance=escrow_balance or Decimal('0'), balance_date=start_date or _date.today(),
         )
         loan.save(update_fields=['escrow_account'])
