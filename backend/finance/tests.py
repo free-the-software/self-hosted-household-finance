@@ -3452,6 +3452,28 @@ class AssetsAndLoansTests(StorageTestCase):
         self.assertEqual(response.status_code, 201, response.content)
         return response.json()
 
+    def test_account_names_are_unique(self):
+        first = self.api('post', '/api/accounts/', {'name': 'Checking', 'account_type': 'CHECKING'})
+        self.assertEqual(first.status_code, 201, first.content)
+        for twin in ('Checking', 'checking', '  CHECKING  '):
+            again = self.api('post', '/api/accounts/', {'name': twin, 'account_type': 'CHECKING'})
+            self.assertEqual(again.status_code, 400, twin)
+            self.assertIn('already have an account called "Checking"', again.json()['name'][0])
+        self.assertEqual(self.api('post', '/api/accounts/', {'name': '   ', 'account_type': 'CHECKING'}).status_code, 400)
+        other = self.api('post', '/api/accounts/', {'name': 'Savings', 'account_type': 'SAVINGS'}).json()
+        self.assertEqual(self.api('patch', f"/api/accounts/{other['account_id']}/", {'name': 'checking'}).status_code, 400, 'no renaming onto another')
+        self.assertEqual(self.api('patch', f"/api/accounts/{other['account_id']}/", {'name': 'savings '}).json()['name'], 'savings', 'its own name, recased')
+        # Assets and loans are accounts too
+        self.assertEqual(self.api('post', '/api/holdings/', {'name': 'checking', 'kind': 'home'}).status_code, 400)
+        # Twins from before the rule can still be edited, as long as the name isn't changed
+        twin = Account.objects.create(name='Checking')
+        self.assertEqual(self.api('patch', f'/api/accounts/{twin.pk}/', {'name': 'Checking', 'owner': 'Sam'}).status_code, 200)
+
+    def test_an_escrow_account_gets_a_name_of_its_own(self):
+        Account.objects.create(name='Mortgage escrow')
+        self.create(self.mortgage_body(escrow_mode='ACCOUNT'))
+        self.assertTrue(Account.objects.filter(name='Mortgage escrow 2').exists())
+
     def mortgage_body(self, **loan):
         return {'name': 'Mortgage', 'kind': 'mortgage', 'loan': {
             'lender': 'Big Bank', 'original_balance': '300000.00', 'interest_rate': '6.500', 'term_months': 360,
