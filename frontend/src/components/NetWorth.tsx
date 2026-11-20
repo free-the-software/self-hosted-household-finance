@@ -289,7 +289,9 @@ const NetWorth = () => {
                         <thead>
                             <tr className="text-xs uppercase text-gray-500">
                                 <th></th><th className="text-right font-bold pb-1">Balance</th>
-                                <th className="text-right font-bold pb-1 pl-4">Outlook</th>
+                                {/* Checking shows its outlook here instead (labelled on its own row):
+                                    a checking balance swings with every payday and bill, so its
+                                    change over a period says little */}
                                 <th className="text-right font-bold pb-1 pl-4">Change since {first ? dayLabel(first.date) : ''}</th>
                             </tr>
                         </thead>
@@ -310,8 +312,9 @@ const NetWorth = () => {
                                         <tr>
                                             <td className="pt-4 pb-1 text-xs font-bold uppercase text-gray-500">{title}</td>
                                             <td className="pt-4 pb-1 text-right text-xs font-bold text-gray-400 font-mono">{money(total)}</td>
-                                            <td></td>
-                                            <td className="pt-4 pb-1 pl-4 text-right text-xs font-bold font-mono">{changeCell(totalChange)}</td>
+                                            {group === 'checking'
+                                                ? <td className="pt-4 pb-1 pl-4 text-right text-xs font-bold uppercase text-gray-500">Outlook</td>
+                                                : <td className="pt-4 pb-1 pl-4 text-right text-xs font-bold font-mono">{changeCell(totalChange)}</td>}
                                         </tr>
                                         {rows.map(a => {
                                             const value = at(latest, a);
@@ -332,8 +335,9 @@ const NetWorth = () => {
                                                         </div>
                                                     </td>
                                                     <td className={`py-1.5 text-right font-mono ${value < 0 ? 'text-red-300' : 'text-white'}`}>{money(value)}</td>
+                                                    {group === 'checking' ? (
                                                     <td className="py-1.5 pl-4 text-right text-xs whitespace-nowrap">
-                                                        {!outlook ? <span className="text-gray-600">—</span> : outlook.will_decrement ? (
+                                                        {!outlook ? <span className="text-gray-600" title='No forecast: switch on "Dashboard Forecast" for this account in Settings → Accounts'>—</span> : outlook.will_decrement ? (
                                                             <span className="inline-flex items-center gap-1 text-red-400 font-bold" title={`Lowest ahead: ${money(Number(outlook.projected_balance))}`}>
                                                                 <ArrowTrendingDownIcon className="w-4 h-4" /> Deficit from {outlook.deficit_date ? dayLabel(outlook.deficit_date) : 'today'}
                                                             </span>
@@ -343,7 +347,9 @@ const NetWorth = () => {
                                                             </span>
                                                         )}
                                                     </td>
+                                                    ) : (
                                                     <td className="py-1.5 pl-4 text-right font-mono">{changeCell(value - at(first, a))}</td>
+                                                    )}
                                                 </tr>
                                             );
                                         })}
