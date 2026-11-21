@@ -41,8 +41,15 @@ jobs:
           - image: receipt-reader
             context: ai_worker
             platforms: linux/amd64
+            # Large and slow to build, and rarely changed: when ai_worker/ is
+            # the same as at the previous release, that release's image is
+            # given the new version's tags instead of being built again. (The
+            # version isn't built into this image, so nothing in it changes.)
+            reuse_when_unchanged: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0    # the tags and history, to compare with the previous release
 
       - name: Version from the tag
         id: version
@@ -65,7 +72,35 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      - name: Unchanged since the previous release?
+        id: reuse
+        if: matrix.reuse_when_unchanged
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          FOLDER: ${{ matrix.context }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v*.*.*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$previous" ] && git diff --quiet "$previous" "$GITHUB_REF_NAME" -- "$FOLDER" \
+             && docker buildx imagetools inspect "$IMAGE:${previous#v}" >/dev/null 2>&1; then
+            echo "$FOLDER is unchanged since $previous: reusing its image."
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "from=$IMAGE:${previous#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building: ${previous:-no previous release} differs, or its image isn't there."
+          fi
+
+      - name: Give the existing image the new version
+        if: steps.reuse.outputs.reuse == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          FROM_IMAGE: ${{ steps.reuse.outputs.from }}
+        run: |
+          args=()
+          while read -r tag; do [ -n "$tag" ] && args+=(-t "$tag"); done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "$FROM_IMAGE"
+
       - uses: docker/build-push-action@v7
+        if: steps.reuse.outputs.reuse != 'true'
         with:
           context: ${{ matrix.context }}
           platforms: ${{ matrix.platforms }}
