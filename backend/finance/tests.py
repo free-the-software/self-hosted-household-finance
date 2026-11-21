@@ -2339,6 +2339,126 @@ class BudgetYearToDateTests(StorageTestCase):
         self.assertEqual(Decimal(str(month['summary']['expense_actual'])), Decimal('-10.00'))
 
 
+class BudgetSuggestionTests(StorageTestCase):
+    """Next year's budget suggested per category from three years of history, with reasons."""
+    TODAY = date(2026, 11, 21)         # blocks: Nov 2025-Oct 2026, Nov 2024-Oct 2025, Nov 2023-Oct 2024
+
+    def setUp(self):
+        super().setUp()
+        from finance.models import Category, SubCategory
+        self.bank = Account.objects.create(name='Bank', account_type='CHECKING')
+        food = Category.objects.create(name='Food', type='EXP')
+        car = Category.objects.create(name='Auto', type='EXP')
+        home = Category.objects.create(name='Home', type='EXP')
+        pay = Category.objects.create(name='Income', type='INC')
+        self.sub = {name: SubCategory.objects.create(name=name, category=cat) for name, cat in (
+            ('Groceries', food), ('Repairs', car), ('Insurance', home), ('Gifts', home), ('Gym', home),
+            ('Utilities', home), ('Salary', pay))}
+        self.n = 0
+
+    def add(self, name, day, amount):
+        self.n += 1
+        Transaction.objects.create(account=self.bank, fitid=f'T{self.n}', dtposted=day, trnamt=Decimal(amount),
+                                   name=f'{name} payee', status='C', subcategory=self.sub[name])
+
+    def history(self):
+        months = [date(2023 + (10 + m) // 12, (10 + m) % 12 + 1, 5) for m in range(36)]   # Nov 2023 .. Oct 2026
+        for n, day in enumerate(months):
+            self.add('Groceries', day, '-400')
+            self.add('Repairs', day, '-50')
+            self.add('Salary', day, ('3000', '3150', '3300')[n // 12])
+            self.add('Utilities', day, ('-200', '-200', '-100')[n // 12])     # blocks newest first: 1200, 2400, 2400
+        self.add('Repairs', date(2026, 3, 9), '-2400')                       # a one-off
+        for year in (2024, 2025, 2026):
+            self.add('Insurance', date(year, 6, 1), '-1200')                 # yearly, in June
+        for year in (2023, 2024, 2025):
+            self.add('Gifts', date(year, 12, 10), '-600')                    # yearly, in December
+        from finance.models import RecurringTransaction
+        RecurringTransaction.objects.create(name='Gym membership', amount=Decimal('-50'), account=self.bank,
+                                            frequency='MONTHLY', start_date=date(2026, 1, 1), subcategory=self.sub['Gym'])
+
+    def rows(self, **options):
+        from finance import budget_suggestions
+        result = budget_suggestions.suggest(2027, today=self.TODAY, **options)
+        return result, {r['name']: r for r in result['rows']}
+
+    def test_suggestions_from_three_years(self):
+        self.history()
+        result, rows = self.rows()
+        self.assertEqual(result['blocks'], ['Nov 2025 – Oct 2026', 'Nov 2024 – Oct 2025', 'Nov 2023 – Oct 2024'])
+        # Steady: averaged, spread evenly
+        self.assertEqual(rows['Groceries']['months'], [Decimal('400')] * 12)
+        self.assertIn('Averaged $400/month over 3 years', rows['Groceries']['reasons'][0])
+        # The $2,400 repair is left out, and listed
+        self.assertEqual(rows['Repairs']['suggestion'], Decimal('600'))
+        self.assertEqual([o['amount'] for o in rows['Repairs']['one_offs']], [Decimal('2400.00')])
+        self.assertTrue(any('Leaves out $2,400' in r for r in rows['Repairs']['reasons']))
+        # Yearly bills: in the month they're paid
+        self.assertEqual(rows['Insurance']['months'][5], Decimal('1200'))
+        self.assertEqual(sum(rows['Insurance']['months']), Decimal('1200'))
+        self.assertEqual(rows['Gifts']['months'][11], Decimal('600'))
+        # A steady rise is carried forward (about 4.8% a year)
+        self.assertGreater(rows['Salary']['suggestion'], Decimal('3300') * 12)
+        self.assertIn('rising about 5% a year', rows['Salary']['reasons'][0])
+        # Known only from a recurring bill
+        self.assertEqual(rows['Gym']['suggestion'], Decimal('600'))
+        # Every category is listed, even with nothing behind it
+        from finance.models import SubCategory
+        SubCategory.objects.create(name='Dentist', category=self.sub['Gym'].category)
+        _result, again = self.rows()
+        self.assertEqual((again['Dentist']['suggestion'], again['Dentist']['reasons']), (Decimal('0'), ['Nothing in the last 3 years']))
+        self.assertIn('Gym membership $50/month', rows['Gym']['reasons'][-1])
+        # Recent years counting more, or not
+        self.assertEqual(rows['Utilities']['suggestion'], Decimal('1800'))      # (3x1200 + 2x2400 + 2400) / 6
+        _result, equal = self.rows(recent_first=False)
+        self.assertEqual(equal['Utilities']['suggestion'], Decimal('2000'))
+
+    def test_options(self):
+        self.history()
+        _result, spread = self.rows(yearly_bills='spread')
+        self.assertEqual(spread['Insurance']['months'], [Decimal('100')] * 12)
+        _result, one_year = self.rows(years_back=1)
+        self.assertIn('over the last 12 months', one_year['Groceries']['reasons'][0])
+        _result, rounded = self.rows(rounding=100)
+        self.assertTrue(all(m % 100 == 0 for m in rounded['Salary']['months']))
+        _result, expenses = self.rows(kinds=['EXP'])
+        self.assertNotIn('Salary', expenses)
+
+    def test_not_enough_history(self):
+        from finance import budget_suggestions
+        self.add('Groceries', date(2026, 6, 1), '-50')
+        with self.assertRaises(budget_suggestions.SuggestionError):
+            budget_suggestions.suggest(2027, today=self.TODAY)
+
+    def test_apply_keeps_or_replaces(self):
+        from finance.models import Budget
+        Budget.objects.create(subcategory=self.sub['Groceries'], year=2027, month=1, amount=Decimal('999'))
+        months = ['400'] * 12
+        body = {'year': 2027, 'rows': [{'subcategory': self.sub['Groceries'].id, 'months': months},
+                                       {'subcategory': self.sub['Salary'].id, 'months': ['3500'] * 12}]}
+        kept = self.api('post', '/api/budgets/apply-suggestions/', body).json()
+        self.assertEqual((kept['months_set'], kept['months_kept']), (23, 1))
+        self.assertEqual(Budget.objects.get(subcategory=self.sub['Groceries'], year=2027, month=1).amount, Decimal('999'))
+        replaced = self.api('post', '/api/budgets/apply-suggestions/', {**body, 'mode': 'replace'}).json()
+        self.assertEqual(replaced['months_set'], 24)
+        self.assertEqual(Budget.objects.get(subcategory=self.sub['Groceries'], year=2027, month=1).amount, Decimal('400'))
+        bad = self.api('post', '/api/budgets/apply-suggestions/', {'year': 2027, 'rows': [{'subcategory': self.sub['Salary'].id, 'months': ['1'] * 11}]})
+        self.assertEqual(bad.status_code, 400)
+
+    def test_apply_fills_saved_zeros(self):
+        from finance.models import Budget
+        Budget.objects.bulk_create(Budget(subcategory=self.sub['Groceries'], year=2027, month=m, amount=0) for m in range(1, 13))
+        done = self.api('post', '/api/budgets/apply-suggestions/', {'year': 2027, 'rows': [{'subcategory': self.sub['Groceries'].id, 'months': ['400'] * 12}]}).json()
+        self.assertEqual((done['months_set'], done['months_kept']), (12, 0))
+
+    def test_the_endpoint(self):
+        self.assertEqual(self.client.get('/api/budgets/suggestions/?year=2027').status_code, 400, 'no history yet')
+        self.history()
+        answer = self.client.get('/api/budgets/suggestions/?year=2027&years=2&recent=0&yearly=spread&rounding=10')
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(len(answer.json()['blocks']), 2)
+
+
 class BudgetPlanningTests(StorageTestCase):
     """Next year's budget, set up from this year's budget or what was actually spent."""
 
@@ -2373,6 +2493,44 @@ class BudgetPlanningTests(StorageTestCase):
         self.assertEqual(self.budgets(self.food), {1: Decimal('410'), 12: Decimal('620')}, '+3%, to the nearest $10')
         self.assertEqual(self.budgets(self.pay), {1: Decimal('5150')})
         self.assertEqual((result['expense_budget'], result['income_budget'], result['months_set']), (Decimal('1030'), Decimal('5150'), 3))
+
+    def test_the_preview_lists_each_category_to_review(self):
+        from finance.models import SubCategory
+        SubCategory.objects.create(name='Vet', category=self.food.category)       # nothing planned for it
+        result = self.plan(source='budget', expense_percent=Decimal('10'), save=False)
+        rows = {r['name']: r for r in result['rows']}
+        self.assertEqual((rows['Vet']['months'], rows['Vet']['reasons']), ([Decimal('0')] * 12, ['Not budgeted in 2026']),
+                         'every income and expense category is listed, to fill in')
+        self.assertNotIn(self.move.name, rows, 'transfers have no budget')
+        self.assertEqual(rows['Groceries']['months'][0], Decimal('440.00'))
+        self.assertEqual(rows['Groceries']['reasons'], ["Last year's budget, +10%"])
+        self.assertEqual(len(rows['Groceries']['months']), 12)
+        from finance.models import Budget
+        self.assertFalse(Budget.objects.filter(year=2027).exists(), 'a preview saves nothing')
+
+    def test_a_saved_zero_is_no_budget(self):
+        from finance.models import Budget
+        # A category set to 0 for the whole year by hand, before this change saved twelve zeros
+        Budget.objects.bulk_create(Budget(subcategory=self.food, year=2027, month=m, amount=0) for m in range(1, 13))
+        result = self.plan(source='budget')
+        self.assertEqual(result['months_kept'], 0, 'zeros are not "already budgeted"')
+        self.assertEqual(self.budgets(self.food), {1: Decimal('400.00'), 12: Decimal('600.00')})
+        # Setting a month to 0 by hand now clears it
+        self.api('post', '/api/budgets/set-target/', {'subcategory_id': self.food.id, 'year': 2027, 'month': 1, 'amount': 0, 'apply_future': True})
+        self.assertEqual(self.budgets(self.food), {})
+        self.api('post', '/api/budgets/set-target/', {'subcategory_id': self.food.id, 'year': 2027, 'month': 3, 'amount': 75})
+        self.assertEqual(self.budgets(self.food), {3: Decimal('75.00')})
+
+    def test_income_and_expenses_change_by_different_amounts(self):
+        self.plan(source='budget', income_percent=Decimal('2'), expense_percent=Decimal('10'), rounding=10)
+        self.assertEqual(self.budgets(self.food), {1: Decimal('440'), 12: Decimal('660')}, 'expenses +10%')
+        self.assertEqual(self.budgets(self.pay), {1: Decimal('5100')}, 'income +2%')
+        # Through the endpoint, the same
+        from finance.models import Budget
+        Budget.objects.filter(year=2027).delete()
+        answer = self.api('post', '/api/budgets/plan/', {'year': 2027, 'source': 'budget', 'income_percent': 2, 'expense_percent': 10,
+                                                         'rounding': 10, 'preview': True}).json()
+        self.assertEqual(Decimal(str(answer['income_budget'])), Decimal('5100'))
 
     def test_from_actual_spending_month_by_month(self):
         self.plan(source='actual_monthly')

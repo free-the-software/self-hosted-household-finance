@@ -4,53 +4,56 @@
 import { useEffect, useState } from 'react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import api from '../api';
+import type { QuickPlan } from './BudgetSuggestions';
 
 // Setting up a year's budget from the year before (finance/budget_planning.py):
 // from last year's budget or what was actually spent, adjusted and rounded,
 // with the totals it comes to shown before anything is saved.
 
 const SOURCES: [string, string, string][] = [
-    ['budget', "Last year's budget", 'Each month as it was budgeted.'],
+    // Opens the review window instead (BudgetSuggestions.tsx)
+    ['suggested', "Last 3 years' actual, modified average",
+        'Starts from an average of up to three years, then leaves out one-offs, follows steady rises or falls, and keeps yearly bills and seasonal spending in their months. Shows the reason for each figure, to review and change before anything is saved.'],
     ['actual_monthly', "Last year's actual, month by month", 'What was really spent and earned each month, so a December bill stays in December. Months not over yet come from the year before.'],
     ['actual_average', "Last year's actual, averaged", 'The average month, the same every month.'],
-    ['blank', 'Blank', 'No amounts: fill them in yourself. With "Replace them", clears the year.'],
+    ['budget', "Last year's budget", 'Each month as it was budgeted.'],
+    ['blank', 'Blank', 'Fill in the amounts yourself. Anything already budgeted stays.'],
 ];
 const money = (value: number) => value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 
 interface Preview { income_budget: string; expense_budget: string; savings_budget: string; months_set: number; months_kept: number; }
 
-const PlanBudget = ({ year, onClose, onDone }: { year: number; onClose: () => void; onDone: () => void }) => {
-    const [source, setSource] = useState('budget');
-    const [percent, setPercent] = useState('0');
+const PlanBudget = ({ year, onClose, onDone, onSuggest, onReview }: {
+    year: number; onClose: () => void; onDone: (quiet?: boolean) => void; onSuggest: () => void; onReview: (plan: QuickPlan) => void;
+}) => {
+    const [source, setSource] = useState('suggested');
+    const suggested = source === 'suggested';
+    const [incomePercent, setIncomePercent] = useState('0');
+    const [expensePercent, setExpensePercent] = useState('0');
     const [rounding, setRounding] = useState('10');
     const [kinds, setKinds] = useState('both');
     const [mode, setMode] = useState('fill');
     const [preview, setPreview] = useState<Preview | null>(null);
     const [error, setError] = useState('');
-    const [busy, setBusy] = useState(false);
 
+    const blank = source === 'blank';
     const body = () => ({
-        year, source, percent: Number(percent) || 0, rounding: Number(rounding),
-        kinds: kinds === 'both' ? ['EXP', 'INC'] : [kinds], mode,
+        year, source, income_percent: Number(incomePercent) || 0, expense_percent: Number(expensePercent) || 0,
+        rounding: Number(rounding),
+        // Blank is the whole year, income and expenses; its preview counts what it would clear
+        kinds: blank || kinds === 'both' ? ['EXP', 'INC'] : [kinds], mode: blank ? 'fill' : mode,
     });
 
     // What it would come to, whenever a choice changes
     useEffect(() => {
+        if (suggested || blank) { setPreview(null); setError(''); return; }
         api.post('/budgets/plan/', { ...body(), preview: true })
             .then(res => { setPreview(res.data); setError(''); })
             .catch(err => { setPreview(null); setError(err.response?.data?.error || 'Could not work it out.'); });
-    }, [source, percent, rounding, kinds, mode]);
+    }, [source, incomePercent, expensePercent, rounding, kinds, mode]);
 
-    const create = async () => {
-        setBusy(true);
-        try {
-            await api.post('/budgets/plan/', body());
-            onDone();
-        } catch (err: any) {
-            setError(err.response?.data?.error || 'Could not set up the budget.');
-            setBusy(false);
-        }
-    };
+    // Blank: nothing to work out or save; on to the year, to fill it in
+    const startBlank = () => onDone(true);
 
     const label = 'block text-xs font-bold text-gray-400 uppercase mb-1';
     const input = 'w-full bg-gray-800 border border-gray-700 rounded-lg text-white p-2 text-sm';
@@ -75,25 +78,7 @@ const PlanBudget = ({ year, onClose, onDone }: { year: number; onClose: () => vo
                         ))}
                     </fieldset>
 
-                    {source !== 'blank' && (
-                        <div className="grid grid-cols-2 gap-3">
-                            <div>
-                                <label htmlFor="plan-percent" className={label}>Change by (%)</label>
-                                <input id="plan-percent" inputMode="decimal" value={percent} onChange={e => setPercent(e.target.value)} className={input} />
-                            </div>
-                            <div>
-                                <label htmlFor="plan-round" className={label}>Round to</label>
-                                <select id="plan-round" value={rounding} onChange={e => setRounding(e.target.value)} className={input}>
-                                    <option value="0">The cent</option>
-                                    <option value="1">$1</option>
-                                    <option value="10">$10</option>
-                                    <option value="100">$100</option>
-                                </select>
-                            </div>
-                        </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-3">
+                    {!suggested && !blank && <div className="grid grid-cols-2 gap-3">
                         <div>
                             <label htmlFor="plan-kinds" className={label}>Budget</label>
                             <select id="plan-kinds" value={kinds} onChange={e => setKinds(e.target.value)} className={input}>
@@ -109,9 +94,35 @@ const PlanBudget = ({ year, onClose, onDone }: { year: number; onClose: () => vo
                                 <option value="replace">Replace them</option>
                             </select>
                         </div>
-                    </div>
+                    </div>}
 
-                    {preview && (
+                    {!suggested && source !== 'blank' && (
+                        <div className="grid grid-cols-2 gap-3">
+                            {kinds !== 'EXP' && (
+                                <div>
+                                    <label htmlFor="plan-income-percent" className={label}>Change income by (%)</label>
+                                    <input id="plan-income-percent" inputMode="decimal" value={incomePercent} onChange={e => setIncomePercent(e.target.value)} className={input} />
+                                </div>
+                            )}
+                            {kinds !== 'INC' && (
+                                <div>
+                                    <label htmlFor="plan-expense-percent" className={label}>Change expenses by (%)</label>
+                                    <input id="plan-expense-percent" inputMode="decimal" value={expensePercent} onChange={e => setExpensePercent(e.target.value)} className={input} />
+                                </div>
+                            )}
+                            <div>
+                                <label htmlFor="plan-round" className={label}>Round to</label>
+                                <select id="plan-round" value={rounding} onChange={e => setRounding(e.target.value)} className={input}>
+                                    <option value="0">Nearest 0.01</option>
+                                    <option value="1">$1</option>
+                                    <option value="10">$10</option>
+                                    <option value="100">$100</option>
+                                </select>
+                            </div>
+                        </div>
+                    )}
+
+                    {preview && !blank && (
                         <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 text-sm">
                             <p className="text-xs font-bold text-gray-400 uppercase mb-2">{year} would come to</p>
                             <div className="grid grid-cols-3 gap-2 font-mono">
@@ -131,10 +142,27 @@ const PlanBudget = ({ year, onClose, onDone }: { year: number; onClose: () => vo
                 </div>
                 <div className="p-4 border-t border-gray-800 bg-gray-950 flex justify-end gap-3">
                     <button onClick={onClose} className="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
-                    <button onClick={create} disabled={busy || !preview || (preview.months_set === 0 && mode !== 'replace')}
-                        className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold rounded-lg">
-                        {busy ? 'Setting up...' : `Set up ${year}`}
-                    </button>
+                    {suggested ? (
+                        <button onClick={onSuggest} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg">
+                            Review suggestions
+                        </button>
+                    ) : source !== 'blank' ? (
+                        // Every plan is reviewed, category by category, before anything is saved
+                        <button disabled={!preview}
+                            onClick={() => onReview({
+                                source, label: (SOURCES.find(([value]) => value === source)?.[1] ?? source).replace(/^L/, 'l'),
+                                income_percent: Number(incomePercent) || 0, expense_percent: Number(expensePercent) || 0,
+                                rounding: Number(rounding), kinds: kinds === 'both' ? ['EXP', 'INC'] : [kinds], mode: mode as 'fill' | 'replace',
+                            })}
+                            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold rounded-lg">
+                            Review
+                        </button>
+                    ) : (
+                        <button onClick={startBlank}
+                            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold rounded-lg">
+                            Start blank
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

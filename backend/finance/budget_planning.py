@@ -5,7 +5,8 @@
 Setting up a year's budget from the year before, as personal-finance
 programs do: start from last year's budget, or from what was actually spent
 and earned (each month as it was, so a December bill stays in December, or
-the average month), adjust by a percentage, round, and fill the year.
+the average month), adjust by a percentage (one for income, one for
+expenses), round, and fill the year.
 
 Budgets are kept per subcategory per month, as positive amounts for both
 income and expenses (Budget). Actual spending is negative in the ledger, so
@@ -29,6 +30,12 @@ from django.db.models.functions import ExtractMonth
 from .models import Budget, SubCategory, Transaction, TransactionSplit
 
 SOURCES = ('budget', 'actual_monthly', 'actual_average', 'blank')
+SOURCE_LABELS = {
+    'budget': "Last year's budget",
+    'actual_monthly': "Last year's actual, month by month",
+    'actual_average': "Last year's actual, averaged",
+    'blank': 'Blank',
+}
 ROUNDINGS = (0, 1, 10, 100)
 CENT = Decimal('0.01')
 
@@ -107,7 +114,7 @@ def _adjust(amount, percent, rounding):
 
 
 def plan_year(year, source='budget', percent=Decimal('0'), rounding=0, kinds=('EXP', 'INC'), replace=False,
-              save=True, today=None):
+              save=True, today=None, income_percent=None, expense_percent=None):
     """
     Works out a year's budget and, with save, sets it. Keeps months that
     already have a budget unless replace, which clears the chosen kinds'
@@ -124,11 +131,17 @@ def plan_year(year, source='budget', percent=Decimal('0'), rounding=0, kinds=('E
         raise PlanError('Choose income, expenses, or both.')
 
     amounts, subs = source_amounts(year, source, kinds, today)
-    planned = {key: _adjust(value, percent, rounding) for key, value in amounts.items()}
+    # Income and expenses can change by different amounts (a raise, prices going up)
+    percents = {'INC': percent if income_percent is None else income_percent,
+                'EXP': percent if expense_percent is None else expense_percent}
+    planned = {key: _adjust(value, percents[subs[key[0]]], rounding) for key, value in amounts.items()}
     planned = {key: value for key, value in planned.items() if value > 0}
+    # A month counts as budgeted only with an amount: a 0 looks the same as
+    # no budget on screen, so it never blocks a plan
     existing = {} if replace else {
         (row['subcategory_id'], row['month']): row['amount']
-        for row in Budget.objects.filter(year=year, subcategory_id__in=subs).values('subcategory_id', 'month', 'amount')
+        for row in Budget.objects.filter(year=year, subcategory_id__in=subs).exclude(amount=0)
+        .values('subcategory_id', 'month', 'amount')
     }
     to_set = {key: value for key, value in planned.items() if key not in existing}
 
@@ -137,8 +150,34 @@ def plan_year(year, source='budget', percent=Decimal('0'), rounding=0, kinds=('E
     totals = {'income': Decimal('0'), 'expenses': Decimal('0')}
     for (sub, _month), amount in final.items():
         totals['income' if subs[sub] == 'INC' else 'expenses'] += amount
+    # Each category's twelve months as planned, to review before anything is saved
+    # Every income and expense category, so one with nothing behind it can be filled in too
+    names = {sub.id: sub for sub in SubCategory.objects.select_related('category').filter(pk__in=subs)}
+    last_year = monthly_actuals(year - 1, _complete_months(year - 1, today))
+    existing_totals = defaultdict(Decimal)
+    for (sub, _month), amount in existing.items():
+        existing_totals[sub] += amount
+    rows = []
+    for sid, sub in names.items():
+        kind = subs[sid]
+        months = [planned.get((sid, m), Decimal('0')) for m in range(1, 13)]
+        change = percents[kind]
+        if any(months):
+            reason = SOURCE_LABELS[source] + (f', {change:+g}%' if change else '')
+        else:
+            reason = f'Not budgeted in {year - 1}' if source == 'budget' else f'Nothing in {year - 1}'
+        rows.append({
+            'subcategory': sid, 'name': sub.name, 'category': sub.category.name, 'kind': kind,
+            'history': [{'label': str(year - 1), 'total': sum((_as_budget(last_year.get((sid, m), Decimal('0')), 'INC' if kind == 'INC' else 'EXP')
+                                                                for m in range(1, 13)), Decimal('0'))}],
+            'suggestion': sum(months, Decimal('0')), 'months': months, 'reasons': [reason], 'one_offs': [],
+            'existing_budget': existing_totals.get(sid, Decimal('0')),
+        })
+    order = {sid: (sub.category.sort_order, sub.category.name.lower(), sub.name.lower()) for sid, sub in names.items()}
+    rows.sort(key=lambda r: (r['kind'] != 'INC', order[r['subcategory']]))
     result = {
         'year': year,
+        'rows': rows,
         'income_budget': totals['income'],
         'expense_budget': totals['expenses'],
         'savings_budget': totals['income'] - totals['expenses'],
@@ -149,6 +188,9 @@ def plan_year(year, source='budget', percent=Decimal('0'), rounding=0, kinds=('E
         with transaction.atomic():
             if replace:
                 Budget.objects.filter(year=year, subcategory_id__in=subs).delete()
+            else:
+                # Saved zeros are no budget: cleared, so the plan fills those months
+                Budget.objects.filter(year=year, subcategory_id__in=subs, amount=0).delete()
             Budget.objects.bulk_create(
                 Budget(subcategory_id=sub, year=year, month=month, amount=amount) for (sub, month), amount in to_set.items())
     return result
