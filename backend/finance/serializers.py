@@ -68,6 +68,17 @@ def check_account_name(name, instance=None):
     return name
 
 
+def refuse_closed_account(account, current_id=None):
+    """
+    A closed account takes nothing new: no transaction, recurring bill, loan
+    payment or loan secured on it. What already points at it (current_id)
+    can still be edited.
+    """
+    if account is not None and (account.closed_date or not account.active) and account.pk != current_id:
+        raise serializers.ValidationError(f'"{account.name}" is closed. Choose an open account.')
+    return account
+
+
 def unused_account_name(base):
     """base, or base with a number after it if that name is taken: "House escrow 2"."""
     name, number = base, 2
@@ -226,6 +237,10 @@ class TransactionSerializer(serializers.ModelSerializer):
             'fitid': {'validators': []}
         }
 
+    def validate_account(self, account):
+        # No new transactions, or moves, into a closed account
+        return refuse_closed_account(account, getattr(self.instance, 'account_id', None))
+
     def get_subcategory_amount(self, obj):
         amount = getattr(obj, 'subcategory_amount', None)
         return None if amount is None else f'{amount:.2f}'
@@ -347,6 +362,10 @@ class RecurringTransactionSerializer(serializers.ModelSerializer):
             'subcategory', 'subcategory_name', 'category_name'
         ]
 
+    def validate_account(self, account):
+        # No new recurring bill or income in a closed account
+        return refuse_closed_account(account, getattr(self.instance, 'account_id', None))
+
 class StagedSplitSerializer(serializers.Serializer):
     """One split line of an imported transaction, before it is approved."""
     subcategory = serializers.PrimaryKeyRelatedField(queryset=SubCategory.objects.all())
@@ -451,6 +470,10 @@ class LoanDetailSerializer(serializers.ModelSerializer):
                    'pmi_category', 'escrow_account']
         extra_kwargs = {'asset_account': {'required': False, 'allow_null': True}}
 
+
+    def validate_asset_account(self, asset):
+        # A loan can't be newly secured on a closed or sold home or vehicle
+        return refuse_closed_account(asset, getattr(self.instance, 'asset_account_id', None))
     def get_scheduled_payment(self, obj):
         from .loans import scheduled_payment
         return str(scheduled_payment(obj))

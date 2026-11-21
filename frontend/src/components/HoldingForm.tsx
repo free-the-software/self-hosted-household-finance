@@ -129,7 +129,9 @@ const HoldingForm = ({ kind, holding, assets, onClose, onSaved }: Props) => {
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
 
-    const securable = assets.filter(a => (kind === 'mortgage' ? a.kind === 'home' : kind === 'auto_loan' ? a.kind === 'vehicle' : !isLoan(a.kind)));
+    // Not a closed (sold) home or vehicle, unless this loan already points at it
+    const securable = assets.filter(a => (kind === 'mortgage' ? a.kind === 'home' : kind === 'auto_loan' ? a.kind === 'vehicle' : !isLoan(a.kind))
+        && (!(a.closed_date || a.active === false) || a.id === holding?.loan?.asset_account));
 
     const flatten = (data: any, prefix = ''): Record<string, string> => {
         const out: Record<string, string> = {};

@@ -62,7 +62,7 @@ const rangeStart = (key: RangeKey): string | null => {
 
 // The order and titles of the account groups (the server says which group each is in)
 const GROUP_TITLES: [string, string][] = [
-    ['checking', 'Checking'], ['savings', 'Savings'], ['investments', 'Investments'], ['property', 'Homes and vehicles'],
+    ['checking', 'Checking accounts'], ['savings', 'Savings accounts'], ['investments', 'Investments'], ['property', 'Homes and vehicles'],
     ['other_assets', 'Other assets'], ['credit_cards', 'Credit cards'], ['loans', 'Loans'], ['other', 'Other accounts'],
 ];
 // The quick updates offered beside each asset or loan

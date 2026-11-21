@@ -1335,6 +1335,9 @@ class HoldingViewSet(viewsets.ModelViewSet):
                 return Response({'error': 'That transaction no longer exists.'}, status=status.HTTP_404_NOT_FOUND)
         elif data.get('from_account'):
             from_account = Account.objects.filter(pk=data['from_account']).first()
+            if from_account and (from_account.closed_date or not from_account.active):
+                return Response({'error': f'"{from_account.name}" is closed. Choose an open account to pay from.'},
+                                status=status.HTTP_400_BAD_REQUEST)
         try:
             payment = loans.record_payment(loan, holding, day, data, from_account=from_account, existing=existing,
                                            memo=data.get('memo', ''))
