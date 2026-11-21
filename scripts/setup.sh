@@ -144,8 +144,11 @@ else
     else
         echo "The first build takes a few minutes."
     fi
-    # The release being built, if this is one (shown in Settings)
-    export APP_VERSION="$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//' || true)"
+    # The version recorded in the app: the release this code is, or the latest
+    # release it's newer than, plus how many changes newer ("1.0.2+3"), so the
+    # release check knows where it stands. Test releases (1.2.0-rc1) don't count.
+    export APP_VERSION="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' 2>/dev/null \
+        | sed -E 's/^v//; s/-([0-9]+)-g[0-9a-f]+$/+\1/' || true)"
     docker compose up -d --build
 fi
 
