@@ -2261,8 +2261,20 @@ class SystemStatusTests(StorageTestCase):
 
     def test_version_numbers(self):
         from finance.system import version_tuple
-        self.assertEqual([version_tuple(v) for v in ('v1.4.0', '1.4', '1.4.0-3-gabc123', 'abc123', '')],
-                         [(1, 4, 0), (1, 4, 0), (1, 4, 0), None, None])
+        self.assertEqual([version_tuple(v) for v in ('v1.4.0', '1.4', '1.4.0-3-gabc123', '1.4.0+3', 'abc123', '')],
+                         [(1, 4, 0), (1, 4, 0), (1, 4, 0), (1, 4, 0), None, None])
+
+    def test_a_build_newer_than_the_latest_release_is_not_told_to_update(self):
+        from finance import system
+        release = mock.Mock(status_code=200, json=lambda: {'tag_name': 'v1.0.2', 'html_url': 'u', 'body': ''})
+        with override_settings(UPDATE_CHECK_REPO='o/r', APP_VERSION='1.0.2+2'), mock.patch('finance.system.requests.get', return_value=release):
+            self.assertFalse(system.update_status()['newer'], 'built from code two changes past 1.0.2')
+        system.forget_settings()
+        from django.core.cache import cache
+        cache.clear()
+        with override_settings(UPDATE_CHECK_REPO='o/r', APP_VERSION='1.0.2+2'), \
+                mock.patch('finance.system.requests.get', return_value=mock.Mock(status_code=200, json=lambda: {'tag_name': 'v1.0.3', 'html_url': 'u', 'body': ''})):
+            self.assertTrue(system.update_status()['newer'], 'but a later release is')
 
 
 class SavingsTests(StorageTestCase):
