@@ -13,7 +13,7 @@ import type { Holding } from './HoldingForm';
 // gets split and linked, or a new pending one in the chosen account.
 
 interface Candidate { id: number; date: string; description: string; amount: string; account_name: string; }
-interface BankAccount { account_id: number; name: string; account_type: string; active: boolean; }
+interface BankAccount { account_id: number; name: string; account_type: string; active: boolean; closed_date?: string | null; }
 
 const PARTS: [string, string][] = [
     ['principal', 'Principal (incl. extra)'], ['interest', 'Interest'],
@@ -38,7 +38,7 @@ const LoanPaymentForm = ({ holding, onClose, onSaved }: { holding: Holding; onCl
 
     useEffect(() => {
         api.get('/accounts/').then(res => {
-            const open = res.data.filter((a: BankAccount) => a.active);
+            const open = res.data.filter((a: BankAccount) => a.active && !a.closed_date);
             setAccounts(open);
             const checking = open.find((a: BankAccount) => (a.account_type || '').toUpperCase().includes('CHECKING'));
             if (checking) setFromAccount(String(checking.account_id));

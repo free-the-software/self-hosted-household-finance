@@ -396,7 +396,11 @@ const TransactionList = () => {
                             <label htmlFor="txAccount" className="block text-xs font-bold text-gray-500 uppercase mb-1">Account</label>
                             <select id="txAccount" value={formData.account?.toString() || ''} onChange={e => setFormData({ ...formData, account: Number(e.target.value) })} className="w-full bg-gray-800 border-gray-700 rounded-lg text-white p-2">
                                 <option value="">Select Account</option>
-                                {accounts.map(acc => <option key={acc.account_id} value={acc.account_id}>{acc.name}</option>)}
+                                {/* No new transactions in a closed account: only the one an
+                                    existing transaction already belongs to is still offered */}
+                                {accounts.filter(acc => !isClosed(acc) || acc.account_id === editingTx?.account).map(acc => (
+                                    <option key={acc.account_id} value={acc.account_id}>{acc.name}{isClosed(acc) ? ' - closed' : ''}</option>
+                                ))}
                             </select>
                         </div>
                         <div>

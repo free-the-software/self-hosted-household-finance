@@ -3237,6 +3237,46 @@ class AccountOrderTests(StorageTestCase):
                                  'Brokerage', 'Car loan', 'Gift cards', 'Closed checking'])
 
 
+class ClosedAccountTests(StorageTestCase):
+    """A closed account takes no new transactions, but its old ones can still be edited."""
+
+    def test_no_recurring_bill_in_a_closed_account(self):
+        open_one = Account.objects.create(name='Open', account_type='CHECKING')
+        closed = Account.objects.create(name='Old bank', account_type='CHECKING', closed_date=date.today())
+        body = {'name': 'Rent', 'amount': '-1200.00', 'frequency': 'MONTHLY', 'start_date': str(date.today())}
+        refused = self.api('post', '/api/recurring/', {**body, 'account': closed.pk})
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn('is closed', refused.json()['account'][0])
+        made = self.api('post', '/api/recurring/', {**body, 'account': open_one.pk})
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertEqual(self.api('patch', f"/api/recurring/{made.json()['id']}/", {'account': closed.pk}).status_code, 400, 'not moved there either')
+
+    def test_no_loan_secured_on_a_closed_home(self):
+        sold = self.api('post', '/api/holdings/', {'name': 'Old house', 'kind': 'home'}).json()
+        Account.objects.filter(pk=sold['id']).update(closed_date=date.today())
+        loan = {'lender': 'Big Bank', 'original_balance': '1000.00', 'interest_rate': '5.000', 'term_months': 12,
+                'origination_date': '2026-01-15', 'first_payment_date': '2026-03-01', 'asset_account': sold['id']}
+        refused = self.api('post', '/api/holdings/', {'name': 'New mortgage', 'kind': 'mortgage', 'loan': loan})
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn('is closed', json.dumps(refused.json()))
+
+    def test_no_new_transactions_in_a_closed_account(self):
+        today = date.today()
+        open_one = Account.objects.create(name='Open', account_type='CHECKING')
+        closed = Account.objects.create(name='Old bank', account_type='CHECKING')
+        old = Transaction.objects.create(account=closed, fitid='OLD', dtposted=today, trnamt=Decimal('-5.00'), name='Old', status='C')
+        Account.objects.filter(pk=closed.pk).update(closed_date=today)
+        body = {'date': str(today), 'amount': '-9.00', 'description': 'Lunch', 'status': 'P', 'is_manual': True}
+        refused = self.api('post', '/api/transactions/', {**body, 'account': closed.pk})
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn('is closed', refused.json()['account'][0])
+        self.assertEqual(self.api('post', '/api/transactions/', {**body, 'account': open_one.pk}).status_code, 201)
+        # An existing one: still editable where it is, but not moved into a closed account
+        self.assertEqual(self.api('patch', f'/api/transactions/{old.pk}/', {'description': 'Old, renamed'}).status_code, 200)
+        moved = Transaction.objects.get(name='Lunch')
+        self.assertEqual(self.api('patch', f'/api/transactions/{moved.pk}/', {'account': closed.pk}).status_code, 400)
+
+
 class AccountForecastTests(StorageTestCase):
     """The Accounts card and the account's ledger agree on whether, and when, the balance goes below zero."""
 
@@ -3633,6 +3673,13 @@ class LoanPaymentTests(StorageTestCase):
         super().setUp()
         self.checking = Account.objects.create(name='Checking', account_type='CHECKING', last_balance=Decimal('10000'), balance_date=date(2026, 1, 1))
         self.today = date.today()
+
+    def test_not_paid_from_a_closed_account(self):
+        m = self.mortgage()
+        Account.objects.filter(pk=self.checking.pk).update(closed_date=date(2026, 2, 1))
+        refused = self.pay(m, {'date': '2026-03-01', 'from_account': self.checking.pk})
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn('is closed', refused.json()['error'])
 
     def mortgage(self, escrow_mode='EXPENSE', **extra):
         body = {'name': 'Mortgage', 'kind': 'mortgage', 'starting_balance': '300000.00', 'starting_date': '2026-01-15',

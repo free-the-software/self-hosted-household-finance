@@ -22,7 +22,10 @@ interface Category {
 interface Account {
     account_id: number;
     name: string;
+    closed_date?: string | null;
+    active?: boolean;
 }
+const isClosed = (acc: Account) => Boolean(acc.closed_date) || acc.active === false;
 
 interface RecurringTxn {
     id: number;
@@ -111,7 +114,7 @@ export default function RecurringTransactions() {
             start_date: new Date().toISOString().split('T')[0],
             create_days_before: 0,
             subcategory: null,
-            account: accounts.length > 0 ? accounts[0].account_id : null
+            account: accounts.find(acc => !isClosed(acc))?.account_id ?? null
         });
         setIsModalOpen(true);
         setIsDeleteConfirm(false);
@@ -356,8 +359,10 @@ export default function RecurringTransactions() {
                                                 onChange={(e) => setCurrentTxn({...currentTxn, account: Number(e.target.value)})}
                                                 className="w-full bg-gray-800 border-gray-700 rounded-lg text-white p-2 focus:ring-2 focus:ring-blue-600 outline-none"
                                             >
-                                                {accounts.map(acc => (
-                                                    <option key={acc.account_id} value={acc.account_id}>{acc.name}</option>
+                                                {/* No new bills or income in a closed account; one already
+                                                    set up there keeps showing it */}
+                                                {accounts.filter(acc => !isClosed(acc) || (currentTxn.id && acc.account_id === currentTxn.account)).map(acc => (
+                                                    <option key={acc.account_id} value={acc.account_id}>{acc.name}{isClosed(acc) ? ' - closed' : ''}</option>
                                                 ))}
                                             </select>
                                         </div>
