@@ -33,7 +33,7 @@ from .serializers import (
 )
 from .services import apply_tax_split, reclassify_staged, suggest_receipt_matches
 from .csv_import import decide_signs, mostly_money_in
-from . import budget_planning, categories, system, forecast, loans, networth, receipt_reader, retention, backups, rules
+from . import account_order, budget_planning, categories, system, forecast, loans, networth, receipt_reader, retention, backups, rules
 from .throttles import VisitorLimit, UserLimit, UploadLimit, HeavyLimit
 from .models import RetentionRun, Backup, BackupSettings
 from django.conf import settings
@@ -446,6 +446,8 @@ class AccountViewSet(viewsets.ModelViewSet):
             # Assets and loans are managed on the Net Worth page (/api/holdings/),
             # not in the bank-account lists and dropdowns
             queryset = queryset.filter(asset_details__isnull=True, loan_details__isnull=True, escrow_for_loan__isnull=True)
+            # Everyday accounts first, the most used first (finance/account_order.py)
+            queryset = account_order.ordered(queryset)
         return queryset
 
     def destroy(self, request, *args, **kwargs):

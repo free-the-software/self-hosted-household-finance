@@ -3212,6 +3212,31 @@ class IdleSignOutTests(StorageTestCase):
         self.assertIn('finance.idle.IdleTimeout', real.MIDDLEWARE)
 
 
+class AccountOrderTests(StorageTestCase):
+    """Accounts are listed everyday ones first, the most used first, never newest first."""
+
+    def test_by_type_then_most_used_then_name_with_closed_last(self):
+        today = date.today()
+        made = {}
+        # Created in an order that, listed as stored, would come out wrong
+        for name, kind in (('Old card', 'CREDIT CARD'), ('Brokerage', 'INVESTMENT'), ('Rainy day', 'SAVINGS'),
+                           ('Spare checking', 'CHECKING'), ('Wallet', 'cash'), ('Main checking', 'Checking '),
+                           ('Car loan', 'LOAN'), ('Gift cards', ''), ('Daily card', 'CREDITCARD'), ('Closed checking', 'CHECKING')):
+            made[name] = Account.objects.create(name=name, account_type=kind)
+        Account.objects.filter(name='Closed checking').update(closed_date=today)
+        def spend(name, count, days_ago=1):
+            for n in range(count):
+                Transaction.objects.create(account=made[name], fitid=f'{name}-{days_ago}-{n}', dtposted=today - timedelta(days=days_ago),
+                                           trnamt=Decimal('-1.00'), name='X', status='C')
+        spend('Main checking', 5)
+        spend('Spare checking', 2)
+        spend('Spare checking', 20, days_ago=200)       # busy long ago: doesn't count
+        spend('Daily card', 3)
+        names = [a['name'] for a in self.client.get('/api/accounts/').json()]
+        self.assertEqual(names, ['Main checking', 'Spare checking', 'Rainy day', 'Daily card', 'Old card', 'Wallet',
+                                 'Brokerage', 'Car loan', 'Gift cards', 'Closed checking'])
+
+
 class AccountForecastTests(StorageTestCase):
     """The Accounts card and the account's ledger agree on whether, and when, the balance goes below zero."""
 

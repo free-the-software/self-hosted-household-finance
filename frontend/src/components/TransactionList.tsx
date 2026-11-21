@@ -20,7 +20,9 @@ import { askConfirm, notify } from './Dialogs';
 // --- INTERFACES ---
 interface SubCategory { id: number; name: string; }
 interface Category { id: number; name: string; subcategories: SubCategory[]; }
-interface Account { account_id: number; name: string; }
+interface Account { account_id: number; name: string; closed_date?: string | null; active?: boolean; }
+// Closed accounts are listed last (finance/account_order.py) and marked as closed
+const isClosed = (acc: Account) => Boolean(acc.closed_date) || acc.active === false;
 interface Split { id: number; amount: number; subcategory_name: string; memo: string; subcategory?: number; }
 interface Transaction {
     id: number; date: string; description: string; personal_memo: string; amount: number; status: string;
@@ -520,7 +522,9 @@ const TransactionList = () => {
                     <label htmlFor="accountFilter" className="block text-xs font-medium text-gray-400 mb-1 ml-1">Account Filter</label>
                     <select id="accountFilter" value={filterAccountId || ''} onChange={(e) => setFilterAccountId(e.target.value ? Number(e.target.value) : null)} className="w-full bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg p-2.5 focus:ring-blue-500">
                         <option value="">All Accounts</option>
-                        {accounts.map(acc => <option key={acc.account_id} value={acc.account_id}>{acc.name}</option>)}
+                        {accounts.map(acc => isClosed(acc)
+                            ? <option key={acc.account_id} value={acc.account_id} className="italic" style={{ fontStyle: 'italic' }}>{acc.name} - closed</option>
+                            : <option key={acc.account_id} value={acc.account_id}>{acc.name}</option>)}
                     </select>
                 </div>
                 <div className="md:col-span-4">
