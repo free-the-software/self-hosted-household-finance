@@ -7,6 +7,8 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { apiFetch } from '../api';
 import { notify } from './Dialogs';
 import PlanBudget from './PlanBudget';
+import BudgetSuggestions from './BudgetSuggestions';
+import type { QuickPlan } from './BudgetSuggestions';
 
 // --- Types ---
 interface BudgetRow {
@@ -43,6 +45,10 @@ const BudgetView = () => {
   const [isExpanded, setIsExpanded] = useState(true);
   // The year being set up in the Plan window, if open
   const [planning, setPlanning] = useState<number | null>(null);
+  // The year whose suggested budget is being reviewed, if open
+  const [suggesting, setSuggesting] = useState<number | null>(null);
+  // A quick plan from the Plan window, being reviewed
+  const [reviewing, setReviewing] = useState<QuickPlan | null>(null);
 
   // Edit Budget Modal State
   const [editOpen, setEditOpen] = useState(false);
@@ -318,9 +324,15 @@ const BudgetView = () => {
         </div>
       </div>
 
+      {suggesting !== null && (
+        <BudgetSuggestions year={suggesting} plan={reviewing ?? undefined} onClose={() => { setSuggesting(null); setReviewing(null); }}
+          onDone={() => { const planned = suggesting; setSuggesting(null); setReviewing(null); setYear(planned); setMonth(1); }} />
+      )}
       {planning !== null && (
         <PlanBudget year={planning} onClose={() => setPlanning(null)}
-          onDone={() => { const planned = planning; setPlanning(null); setYear(planned); setMonth(1); notify(`${planned}'s budget is set up.`, 'info'); }} />
+          onSuggest={() => { const planned = planning; setPlanning(null); setReviewing(null); setSuggesting(planned); }}
+          onReview={(plan) => { const planned = planning; setPlanning(null); setReviewing(plan); setSuggesting(planned); }}
+          onDone={(quiet) => { const planned = planning; setPlanning(null); setYear(planned); setMonth(1); if (!quiet) notify(`${planned}'s budget is set up.`, 'info'); }} />
       )}
 
       {/* --- Edit Budget Modal --- */}

@@ -33,7 +33,7 @@ from .serializers import (
 )
 from .services import apply_tax_split, reclassify_staged, suggest_receipt_matches
 from .csv_import import decide_signs, mostly_money_in
-from . import account_order, budget_planning, categories, system, forecast, loans, networth, receipt_reader, retention, backups, rules
+from . import account_order, budget_planning, budget_suggestions, categories, system, forecast, loans, networth, receipt_reader, retention, backups, rules
 from .throttles import VisitorLimit, UserLimit, UploadLimit, HeavyLimit
 from .models import RetentionRun, Backup, BackupSettings
 from django.conf import settings
@@ -815,6 +815,8 @@ class BudgetViewSet(viewsets.ModelViewSet):
                 whole_number(data.get('year'), 'year', 1900, 2200),
                 source=data.get('source', 'budget'),
                 percent=Decimal(str(data.get('percent') or 0)),
+                income_percent=Decimal(str(data['income_percent'])) if data.get('income_percent') not in (None, '') else None,
+                expense_percent=Decimal(str(data['expense_percent'])) if data.get('expense_percent') not in (None, '') else None,
                 rounding=int(data.get('rounding') or 0),
                 kinds=data.get('kinds') or ['EXP', 'INC'],
                 replace=data.get('mode') == 'replace',
@@ -823,6 +825,41 @@ class BudgetViewSet(viewsets.ModelViewSet):
         except (InvalidOperation, ValueError):
             raise ValidationError({'percent': 'percent and rounding must be numbers.'})
         except budget_planning.PlanError as error:
+            return Response({'error': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=False, methods=['get'])
+    def suggestions(self, request):
+        """
+        Next year's budget suggested per category from history, with reasons
+        (finance/budget_suggestions.py): ?year=&years=1-3&recent=1&yearly=as_paid|spread
+        &kinds=EXP,INC&rounding=0|1|10|100.
+        """
+        params = request.query_params
+        try:
+            result = budget_suggestions.suggest(
+                whole_number(params.get('year', date.today().year + 1), 'year', 1900, 2200),
+                years_back=whole_number(params.get('years', 3), 'years', 1, 3),
+                recent_first=params.get('recent', '1') not in ('0', 'false', 'no'),
+                yearly_bills=params.get('yearly', 'as_paid'),
+                kinds=[k for k in params.get('kinds', 'EXP,INC').split(',') if k],
+                rounding=whole_number(params.get('rounding', 1), 'rounding', 0, 100),
+            )
+        except budget_suggestions.SuggestionError as error:
+            return Response({'error': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=False, methods=['post'], url_path='apply-suggestions')
+    def apply_suggestions(self, request):
+        """Sets the budget from reviewed suggestions: {year, mode: fill|replace, rows: [{subcategory, months}]}."""
+        data = request.data
+        try:
+            result = budget_suggestions.apply(
+                whole_number(data.get('year'), 'year', 1900, 2200),
+                data.get('rows') or [],
+                replace=data.get('mode') == 'replace',
+            )
+        except budget_suggestions.SuggestionError as error:
             return Response({'error': str(error)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(result)
 
@@ -839,18 +876,15 @@ class BudgetViewSet(viewsets.ModelViewSet):
         except InvalidOperation:
             raise ValidationError({'amount': 'amount must be a number.'})
         apply_future = data.get('apply_future', False)
-        
-        Budget.objects.update_or_create(
-            subcategory_id=sub_id, year=year, month=month,
-            defaults={'amount': amount}
-        )
+        months = range(month, 13) if apply_future else [month]
 
-        if apply_future:
-            for m in range(month + 1, 13):  
-                Budget.objects.update_or_create(
-                    subcategory_id=sub_id, year=year, month=m,
-                    defaults={'amount': amount}
-                )
+        # 0 clears the month: it shows as 0 either way, and a saved 0 would
+        # look "already budgeted" to planning
+        if amount == 0:
+            Budget.objects.filter(subcategory_id=sub_id, year=year, month__in=months).delete()
+        else:
+            for m in months:
+                Budget.objects.update_or_create(subcategory_id=sub_id, year=year, month=m, defaults={'amount': amount})
 
         return Response({'status': 'updated'})
 
